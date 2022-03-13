@@ -1,0 +1,847 @@
+---
+title: "Hazard Factors correlated with the Infection and Death of COVID-19"
+author: "Chenyang Zhang 920275656"
+date: "03/12/2022"
+output:
+  html_document:
+    number_sections: yes
+    toc: TRUE
+    toc_float: TRUE
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+# Abstract
+
+From our intuition, the infection and death of the COVID-19 are highly correlated with the vaccination and age of population. From the news, we could find that the death cases are usually the older. And the medical company would say that their vaccine product could protect people from infection with COVID-19, severe case or even death. It seems that the old people and unvaccinated people are more vulnerable to COVID-19. In order to verify the relationships between these two factors and the infection and death of COVID-19, we use two-way ANOVA model to explain these relationships in statistics. We conclude that the vaccinated population has lower infection rate and death rate, the death rate increase as the age of population increase, and the infection rate has no significant difference among different age groups. Moreover, we want to use COX regression model to build a  survival/hazard function for the COVID-19 patients. This could help us find those risk factors of patients and distinguish what types of patients have greater hazard and need more attention and treatments. 
+
+# Background 
+
+As we all know, the COVID-19 spread around the world since two years ago, and there are more than 415 millions people have been infected by the COVID-19 cumulatively and more than 5 millions people died due to this pandemic. Therefore we want to explore what are the factors that usually correlated with the infections and death of COVID-19 to help protect people from infection and treat the patients.
+
+# Two-way Anova Part
+## Data Set Description
+We use two data sets from CDC[1] to build our two-way ANOVA model. These two data sets all summary the newly increased infection cases and death cases in each week from April 2021 to December 2021, about 40 weeks. The data sets contain these columns that we will use in our analysis.
+
+1. unvaccinated_population: the total number of unvaccinated population in this age group this week
+
+2. unvaccinated_with_outcome: newly increased number of cases from unvaccinated population in this age group this week
+
+3. fully_vaccinated_population: the total number of fully vaccinated population in age group this week
+
+4. vaccinated_with_outcome: newly increased number of cases from fully vaccinated population in this age group this week
+
+5. outcome: the type of outcome: infection or death
+
+6. age_group: the age group of the population. It has six groups: 12-17, 18-29, 30-49, 50-64, 65-79, 80+
+
+In order to figure out the correlations between infection, death of COVID-19 and the age and vaccination of population, we regard whether vaccination and different age group as two independent variables, the infection rate and death rate as dependent variables and each week data as an observation. In each week data, it contains every types of vaccination(vaccinated or unvaccinated) and every groups of age. Therefore, this is a balanced design. But it still exists a suspicion that whether we could omit the influence of time?
+
+We make time trend plots for infection and death as following:
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+library(MASS)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(ggpubr)
+library(readxl)
+library(SuppDists)
+library(tidyverse)
+library(nycflights13)
+library(survival)
+library(psych) 
+library(data.table)
+library(gtsummary)
+library(kableExtra)
+library(qwraps2)
+options(qwraps2_markup="markdown")
+
+
+vaccine = read_excel("weekly.xlsx",sheet="case_vaccine")
+death = read_excel("weekly.xlsx",sheet="death_vaccine")
+blank_theme <- theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.background = element_rect(fill="white"),
+  plot.title=element_text(size=14, face="bold", hjust=0.5)
+)
+
+vaccine = data.frame(vaccine, age.group = factor(vaccine$age_group))
+death = data.frame(death, age.group = factor(death$age_group))
+
+vaccine.un = vaccine[, c("unvaccinated_population", "unvaccinated_with_outcome", "age.group", "mmwr_week")]
+vaccine.va = vaccine[, c("fully_vaccinated_population", "vaccinated_with_outcome", "age.group", "mmwr_week")]
+vaccine.un = data.frame(vaccine.un, vaccination.type = "not_vaccinated", infection.rate = 1000* vaccine.un$unvaccinated_with_outcome / vaccine.un$unvaccinated_population)
+
+vaccine.va = data.frame(vaccine.va, vaccination.type = "vaccinated", infection.rate = 1000* vaccine.va$vaccinated_with_outcome / vaccine.va$fully_vaccinated_population)
+
+vaccine.un$population = vaccine.un$unvaccinated_population
+vaccine.un$case = vaccine.un$unvaccinated_with_outcome
+
+vaccine.va$population = vaccine.va$fully_vaccinated_population
+vaccine.va$case = vaccine.va$vaccinated_with_outcome
+
+vaccine.1 = rbind(vaccine.un[,c("infection.rate","age.group","vaccination.type", "mmwr_week", "population", "case")],vaccine.va[,c("infection.rate","age.group","vaccination.type", "mmwr_week", "population", "case")])
+vaccine.1$vaccination.type = as.factor(vaccine.1$vaccination.type)
+vaccine.1$week = as.integer(substr(vaccine.1$mmwr_week, 5, 7))
+
+vaccine.vacc = summarise(group_by(vaccine.1, vaccination.type, week), total.rate = 1000 * sum(case) / sum(population))[,  c("total.rate", "vaccination.type", "week")]
+
+infection.vaccine.plot = ggplot(data = vaccine.vacc, mapping = aes(
+  x = week, y = total.rate, color = vaccination.type)) + geom_line() + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white"))  + ggtitle("Infection rate with Time")
+
+vaccine.age = summarise(group_by(vaccine.1, age.group, week), total.rate = 1000 * sum(case) / sum(population))[,  c("total.rate", "age.group", "week")]
+
+infection.age.plot = ggplot(data = vaccine.age, mapping = aes(
+  x = week, y = total.rate, color = age.group)) + geom_line() + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Infection rate with Time")
+
+death.un = death[, c("unvaccinated_population", "unvaccinated_with_outcome", "age.group", "mmwr_week")]
+death.va = death[, c("fully_vaccinated_population", "vaccinated_with_outcome", "age.group", "mmwr_week")]
+death.un = data.frame(death.un, vaccination.type = "not_vaccinated", death.rate = 1000* death.un$unvaccinated_with_outcome / death.un$unvaccinated_population)
+death.va = data.frame(death.va, vaccination.type = "vaccinated", death.rate = 1000* death.va$vaccinated_with_outcome / death.va$fully_vaccinated_population)
+
+death.un$population = death.un$unvaccinated_population
+death.un$case = death.un$unvaccinated_with_outcome
+
+death.va$population = death.va$fully_vaccinated_population
+death.va$case = death.va$vaccinated_with_outcome
+
+death.1 = rbind(death.un[,c("death.rate","age.group","vaccination.type", "mmwr_week", "population", "case")],death.va[,c("death.rate","age.group","vaccination.type", "mmwr_week", "population", "case")])
+death.1$vaccination.type = as.factor(death.1$vaccination.type)
+death.1$week = as.integer(substr(death.1$mmwr_week, 5, 7))
+
+death.vacc = summarise(group_by(death.1, vaccination.type, week), total.rate = 1000 * sum(case) / sum(population))[,  c("total.rate", "vaccination.type", "week")]
+
+death.vaccine.plot = ggplot(data = death.vacc, mapping = aes(
+  x = week, y = total.rate, color = vaccination.type)) + geom_line() + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Death rate with Time")
+
+death.age = summarise(group_by(death.1, age.group, week), total.rate = 1000 * sum(case) / sum(population))[,  c("total.rate", "age.group", "week")]
+
+death.age.plot = ggplot(data = death.age, mapping = aes(
+  x = week, y = total.rate, color = age.group)) + geom_line() + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Death rate with Time")
+
+ggarrange(infection.vaccine.plot, infection.age.plot, death.vaccine.plot, death.age.plot, ncol = 2, nrow = 2)
+
+
+vaccine.2 = vaccine.1[sample(nrow(vaccine.1)), c("infection.rate","age.group","vaccination.type")]
+death.2 = death.1[sample(nrow(death.1)), c("death.rate","age.group","vaccination.type")]
+
+```
+
+From the time trend plots we could find that the infection rate and death rate all have similar time trends among different age groups and vaccination(increase and decrease simultaneously). Therefore, we think if our aim is to find the differences among different age and vaccination, we could omit the impact of time.
+(Because the death rate is extremely small, therefore we time 1000 for all rates, that is our dependent variable is actually the $1000 \times infection.rate$ and $1000 \times death.rate$)
+
+## First Model with no Transformation
+### Exploratory data analysis
+```{r echo=FALSE,warning=FALSE,message=FALSE, results="asis"}
+rate.data = data.frame(cbind(vaccine.2$infection.rate, death.2$death.rate))
+names(rate.data) = c("infection.rate", "death.rate")
+rate_summary = qsummary(rate.data,
+                       numeric_summaries = list("Minimum" = "~ min(%s)",
+                                                "25%"     = "~ quantile(%s, 0.25)",
+                                                "Median"  = "~ median(%s)",
+                                                "Mean"    = "~ mean(%s)",
+                                                "75%"     = "~ quantile(%s, 0.75)",
+                                                "Maximum" = "~ max(%s)",
+                                                "Standard Error" = "~ round(sd(%s), 2)"),
+                       n_perc_args = list(digits=1, show_symbol=TRUE, show_denom="always"))
+summary_table(rate.data, rate_summary)
+```
+These are the statistic summary of our infection rate and death rate.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+infection.rate.plot = ggplot(data = vaccine.2, mapping=aes(x = infection.rate, fill = infection.rate)) + geom_histogram(mapping =    aes(y =..density..),  alpha = 0.3, bins = 30, fill = '#3484BE') + geom_density(size = 0.8, color = "#4477AA") + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Histogram of Infection Rate")
+
+death.rate.plot = ggplot(data = death.2, mapping=aes(x = death.rate, fill = death.rate)) + geom_histogram(mapping =    aes(y =..density..),  alpha = 0.3, bins = 30, fill = '#3484BE') + geom_density(size = 0.8, color = "#4477AA") + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Histogram of Death Rate")
+
+ggarrange(infection.rate.plot, death.rate.plot, ncol = 2, nrow = 1)
+```
+
+And these two charts are the distributions of our two rate. From the statistics summary and plots of these two rates we can find that their distribution are all extremely right-skewed, and the death rate is even more extreme compared to infection rate. The median of death rate is even 10 times of its first quarter quantile. And its mean is even large than the third quarter. Maybe we should use a log-transformed infection rate and death rate in our model.
+
+Then, we use box-plot to get the rough relationship between the two rate and our selected two covariates, age group and whether vaccinated.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+box.infection.va <- ggplot(data = vaccine.2,
+    mapping = aes(x = vaccination.type, y = infection.rate)) + geom_boxplot(fill = c('#EE9988', "#77AADD")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Infection among Vaccination")
+
+box.infection.age <- ggplot(data = vaccine.2,
+    mapping = aes(x = age.group, y = infection.rate)) + geom_boxplot(fill = c('#BBFFFF', "#AEEEEE", "#96CDCD", "#668B8B", "#98F5FF", "#8EE5EE")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Infection among Age")
+
+ggarrange(box.infection.va, box.infection.age, ncol = 1, nrow = 2)
+```
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+box.death.va <- ggplot(data = death.2,
+    mapping = aes(x = vaccination.type, y = death.rate)) + geom_boxplot(fill = c('#EE9988', "#77AADD")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Death among Vaccination")
+
+box.death.age <- ggplot(data = death.2,
+    mapping = aes(x = age.group, y = death.rate)) + geom_boxplot(fill = c('#BBFFFF', "#AEEEEE", "#96CDCD", "#668B8B", "#98F5FF", "#8EE5EE")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Death among age")
+
+ggarrange(box.death.va, box.death.age, ncol = 1, nrow = 2)
+```
+
+It seems that the infection rate has a distinct different among the people vaccinated and unvaccinated, while there is no significant difference between the different age groups.
+With respect to the death rate, there are differences in both covariates. The age seems has a positive correlation with death rate for those are larger than 50.Then we try to fit a two-way anova model to verify these findings from plots.[2]
+ 
+### Model diagnosis
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+aov.infection=aov(infection.rate~vaccination.type+age.group+vaccination.type:age.group,data=vaccine.2);
+aov.death=aov(death.rate~vaccination.type+age.group+vaccination.type:age.group,data=death.2);
+```
+We do not demonstrate the output of these two models because we still remember that both our response variables are extremely right-skewed, so we guess they could not pass the assumption diagnoses.We use the residual v.s. fitted value plot and Q-Q plot to make the first step of model diagnostics
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+par(mfrow=c(2,2))
+plot(aov.infection,cex.lab=1.2,which=1:2)
+plot(aov.death,cex.lab=1.2,which=1:2)
+par(mfrow=c(1,1))
+```
+
+And it seems that the both homogeneity of variance and normal assumption do not hold for both model, which correspond to our guess. We think we need some transformation on our response variables. 
+
+## Log-transformed ANOVA Model
+### Exploaratory Data Analysis for Log-transformed Variables
+Firstly, we conduct box-cox transformation on our two original models.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+death.un2 = data.frame(death.un, vaccination.type = "not_vaccinated", death.rate.1 = 1000 * (death.un$unvaccinated_with_outcome + 1) / death.un$unvaccinated_population)
+death.va2 = data.frame(death.va, vaccination.type = "vaccinated", death.rate.1 = 1000 * (death.va$vaccinated_with_outcome + 1) / death.va$fully_vaccinated_population)
+death.3 = rbind(death.un2[,c("death.rate.1","age.group","vaccination.type")],death.va2[,c("death.rate.1","age.group","vaccination.type")])
+death.3$vaccination.type = as.factor(death.3$vaccination.type)
+death.4 = death.3[sample(nrow(death.3)),]
+aov.death=aov(death.rate.1~vaccination.type+age.group+vaccination.type:age.group,data=death.4);
+# + 1 for potential problems in log transformation
+
+par(mfrow=c(1,2))
+boxcox(aov.infection)
+boxcox(aov.death)
+par(mfrow=c(1,1))
+```
+
+The results in box-cox transformation indicate that log transformation might make sense here. There is another problem is that there exist some observation with no deaths, we just add 1 to all death observations to avoid potential problem in log transformation. Then we use $log(infection.rate)$ and $log(death.rate)$ as two new response variables. Firstly we make some exploratory data analysis for these two log-transformed rates.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+vaccine.2$log.rate = log(vaccine.2$infection.rate)
+death.4$log.rate = log(death.4$death.rate.1)
+```
+
+```{r echo=FALSE,warning=FALSE,message=FALSE, results="asis"}
+log.rate.data = data.frame(cbind(vaccine.2$log.rate, death.4$log.rate))
+names(log.rate.data) = c("log.infection.rate", "log.death.rate")
+log.rate_summary = qsummary(log.rate.data,
+                       numeric_summaries = list("Minimum" = "~ min(%s)",
+                                                "25%"     = "~ quantile(%s, 0.25)",
+                                                "Median"  = "~ median(%s)",
+                                                "Mean"    = "~ mean(%s)",
+                                                "75%"     = "~ quantile(%s, 0.75)",
+                                                "Maximum" = "~ max(%s)",
+                                                "Standard Error" = "~ round(sd(%s), 2)"),
+                       n_perc_args = list(digits=1, show_symbol=TRUE, show_denom="always"))
+summary_table(log.rate.data, log.rate_summary)
+```
+These are the statistic summary of two log-transformed rates.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+infection.rate.plot = ggplot(data = vaccine.2, mapping=aes(x = log.rate, fill = log.rate)) + geom_histogram(mapping =    aes(y =..density..),  alpha = 0.3, bins = 30, fill = '#3484BE') + geom_density(size = 0.8, color = "#4477AA") + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Histogram of Infection Rate")
+
+death.rate.plot = ggplot(data = death.4, mapping=aes(x = log.rate, fill = log.rate)) + geom_histogram(mapping =    aes(y =..density..),  alpha = 0.3, bins = 30, fill = '#3484BE') + geom_density(size = 0.8, color = "#4477AA") + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Histogram of Death Rate")
+
+ggarrange(infection.rate.plot, death.rate.plot, ncol = 2, nrow = 1)
+```
+
+These are the distribution histograms of log-transformed rates. We can see the plot is much better than previous, and we can roughly think they follow normal distributions. And we also make box plots like previous process.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+box.infection.va.2 <- ggplot(data = vaccine.2,
+    mapping = aes(x = vaccination.type, y = log.rate)) + geom_boxplot(fill = c('#EE9988', "#77AADD")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Log Infection Rate among Vaccination")
+
+box.infection.age.2 <- ggplot(data = vaccine.2,
+    mapping = aes(x = age.group, y = log.rate)) + geom_boxplot(fill = c('#BBFFFF', "#AEEEEE", "#96CDCD", "#668B8B", "#98F5FF", "#8EE5EE")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Log Infection Rate among Age")
+
+ggarrange(box.infection.va.2, box.infection.age.2, ncol = 1, nrow = 2)
+```
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+box.death.va.2 <- ggplot(data = death.4,
+    mapping = aes(x = vaccination.type, y = log.rate)) + geom_boxplot(fill = c('#EE9988', "#77AADD")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Log Death Rate among Vaccination")
+
+box.death.age.2 <- ggplot(data = death.4,
+    mapping = aes(x = age.group, y = log.rate)) + geom_boxplot(fill = c('#BBFFFF', "#AEEEEE", "#96CDCD", "#668B8B", "#98F5FF", "#8EE5EE")) + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Boxplot of Log Death Rate among age")
+
+ggarrange(box.death.va.2, box.death.age.2, ncol = 1, nrow = 2)
+```
+
+The conclusions are same with previous, the log-transformed infection rate has significant difference among vaccinated and unvaccinated population, while it seems has no significant difference among different age group. And the log-transformed death rate has significant difference in both whether vaccinated and age group. Then we fit our new anova model.
+
+### Model fitting
+we define our log-transformed model as follow: 
+
+$Y_{i,j,k} = \mu_{..} + \alpha_{i} + \beta_{j} + (\alpha\beta)_{i,j} + \epsilon_{i,j,k}$, where the index $i$ represents the vaccination type: not_vaccinated ($i=1$), vaccinated ($i=2$), and the index $j$ represents the age groups: 12-17($j=1$), 18-29($j=2$), 30-49($j=3$), 50-64($j=4$), 65-79($j=5$), 80+($j=6$),and $\{\epsilon_{ijk}\}$ are i.i.d. $N(0,\sigma^2)$
+And they all have some notations:[3]
+$$
+\mu_{\cdot \cdot} =\sum_{i=1}^a \sum_{j=1}^ b \mu_{i,j}/(ab), \ \mu_{i\cdot} = \sum_{j=1}^b \mu_{i,j} /b, \ \mu_{\cdot j}=\sum_{i=1}^a \mu_{i,j}/a.
+$$
+where the $\{\mu_{i,j}: i =1,\ldots, a, j=1,\ldots, b\}$ are naturally defined as the population mean of each cell
+$$
+\alpha_i=\mu_{i\cdot} - \mu_{\cdot \cdot},\ \beta_j=\mu_{\cdot j}-\mu_{\cdot\cdot},\ (\alpha\beta)_{i,j} =\mu_{i,j}-\mu_{i\cdot}-\mu_{\cdot j}+\mu_{\cdot\cdot}. 
+$$
+And some constraints:
+$$\sum \alpha_i  = \sum \beta_j=0 $$
+$$\sum_{i=1}^a (\alpha\beta)_{i,j}  =\sum_{j=1}^b (\alpha\beta)_{i,j} = 0$$
+These notations are all same with previous except that $Y_{i,j,k}$ represents the log-transformed infection rate and log-transformed death rate instead of infection rate and death rate.
+
+Firstly, we fit two-way anova for log-transformed infection rate and log-transformed death rate. We only demonstrate the final results without insignificant terms under confidence level $\alpha=0.05$
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+aov.infection.log=aov(log.rate~vaccination.type+age.group+vaccination.type:age.group,data=vaccine.2);
+aov.infection.log2=aov(log.rate~vaccination.type+age.group,data=vaccine.2);
+aov.death.log=aov(log.rate~vaccination.type+age.group+vaccination.type:age.group,data=death.4);
+
+t1 = tbl_regression(aov.infection.log2, exponentiate = TRUE)
+t2 = tbl_regression(aov.death.log, exponentiate = TRUE)
+
+tbl_merge_ex1 = tbl_merge(tbls = list(t1, t2), tab_spanner = c("**Log Infection Rate**", "**Log Death Rate**"))
+tbl_merge_ex1
+```
+We could find that age and vaccine are all significant factors for log infection rate and log death rate, even the interaction term is significant for log death rate. The conclusion that age is significant for infection rate contraries to what we observe in EDA.
+
+### Model diagnosis
+Now we retry the residual v.s. fitted value plot and Q-Q plot to make model diagnoses
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+par(mfrow=c(2,2))
+plot(aov.infection.log2,cex.lab=1.2,which=1:2)
+plot(aov.death.log,cex.lab=1.2,which=1:2)
+par(mfrow=c(1,1))
+```
+
+We can find that the results are much better than before transformation. We don't find non-linear patterns in both residual plots. Although the distribution of residuals for both models are both a little thin-tailed compared to the normal distribution, it will not have significant impact on our results of statistical inference[4] (The type I error is less than the normal distribution, this is a conservative test). 
+
+Further, we want to test the homogeneity of variance. Our null hypotheses is $$H_0: \sigma_{1,1} = \sigma_{1,2} = ... = \sigma_{a,b} \ \ {\rm v.s.} \ \ H_a: not \ all \ \sigma's \ are \ equal$$ We use three methods: 1.Levene Test 2. Hartley's Test 3. Bartlett's Test.[5][6][7] They are all under significance level $\alpha = 0.05$. We firstly make hypotheses test for log-transformed infection rate.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+vaccine.2$res.abs = abs(aov.infection.log2$residuals);
+full2 = aov(res.abs~vaccination.type+age.group,data=vaccine.2)
+reduced2=aov(res.abs~1,data=vaccine.2)
+levene.anova.1 = anova(reduced2,full2)
+Levene = c(NA, NA, levene.anova.1$`Pr(>F)`[2])
+
+infection.vars = summarise(group_by(vaccine.2, vaccination.type, age.group), vars = var(log.rate))[, c("vars", "vaccination.type", "age.group")]
+H.stat=max(infection.vars$vars)/min(infection.vars$vars)
+n = dim(vaccine.2)[1]
+k = dim(infection.vars)[1]
+critical.value = qmaxFratio(0.95,df=n/k-1,k=k)
+#qmaxFratio(0.95,df=ceiling(sum(ns)/length(ns)-1),k=length(ns))
+Hartley = c(H.stat, critical.value, NA)
+
+s.all = sum(infection.vars$vars) / k
+K.stat = (n-k) * log(s.all) - (n/k-1) * sum(log(infection.vars$vars))
+critical.value.2 = qchisq(0.95, df=k-1)
+Bartlett = c(K.stat, critical.value.2, NA)
+
+Homo.1 = data.frame(rbind(Levene, Hartley, Bartlett))
+names(Homo.1) = c("Statistics Value","Critical Value","P-Value")
+Homo.1 %>%
+  kbl(caption = "Homogeneity of Variance Tests for Infection") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+```
+The results of Levene's test and Bartlett's test both indicate we could reject the null hypotheses, while the result of Hartley's test show we could not reject the null hypotheses. This result is different from Levene's Test and Bartlett's test. But some references[5] show that Hartley's Test has a strong dependence on the normal distribution, we guess that's why this situation arises. Therefore, we reject the null hypotheses, which means we think that not all $\sigma's$ are equal.
+
+Then, we make these three tests for log-transformed death rate.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+death.4$res.abs = abs(aov.death.log$residuals);
+full3 = aov(res.abs~vaccination.type+age.group+vaccination.type:age.group,data=death.4)
+reduced3=aov(res.abs~1,data=death.4)
+
+levene.anova.2 = anova(reduced3,full3)
+Levene = c(NA, NA, levene.anova.2$`Pr(>F)`[2])
+
+death.vars = summarise(group_by(death.4, vaccination.type, age.group), vars = var(log.rate))[, c("vars", "vaccination.type", "age.group")]
+H.stat.2=max(death.vars$vars)/min(death.vars$vars)
+n.2 = dim(death.4)[1]
+k.2 = dim(death.vars)[1]
+critical.value.3 = qmaxFratio(0.95,df=n.2/k.2-1,k=k.2)
+#qmaxFratio(0.95,df=ceiling(sum(ns)/length(ns)-1),k=length(ns))
+Hartley = c(H.stat.2, critical.value.3, NA)
+
+s.all.2 = sum(death.vars$vars) / k.2
+K.stat.2 = (n.2-k.2) * log(s.all.2) - (n.2/k.2-1) * sum(log(death.vars$vars))
+critical.value.4 = qchisq(0.95, df=k.2-1)
+
+Bartlett = c(K.stat.2, critical.value.4, NA)
+
+Homo.2 = data.frame(rbind(Levene, Hartley, Bartlett))
+names(Homo.2) = c("Statistics Value","Critical Value","P-Value")
+Homo.2 %>%
+  kbl(caption = "Homogeneity of Variance Tests for Death") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+The results show that all three methods indicate we should reject the null hypotheses, therefore, we reject the null hypotheses, which means we think that not all $\sigma's$ are equal. It seems that heteroscedasticity exists for both log infection rate model and log death rate model.
+
+### Remedies: Weighted Least Square
+We use Weighted least squares methods to modify the model. That means we manually set a sample weight for observations from each cell. And this weight is determined by the variance ratio of each cell.Now our optimization object is:
+$$min \sum_{i=1}^a\sum_{j=1}^b\sum_{k=1}^{n_{i,j}}\omega_{i,j}(Y_{i,j,k} -\mu-\alpha_i-\beta_j - \alpha\beta_{i,j})^2$$
+And $\omega_{i,j} = \frac{1}{s_{i,j}^2}$, $s_{i,j}^2 = \sum_{k=1}^{a,b}\frac{(Y_{i,j,k}-\mu_{i,j})^2}{n_{i,j}-1}$, $\{\mu_{i,j}: i =1,\ldots, a, j=1,\ldots, b\}$ are naturally defined as the population mean of each cell
+
+We assign this weight as a parameter in function aov() in R. We fit the weighted anova model for log-transformed infection rate and log-transformed death rate. Similarly, We only demonstrate the final results without insignificant terms under confidence level $\alpha=0.05$ and their coefficients.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+death.vars$weight = 1 / sqrt(death.vars$vars)
+death.5 = left_join(death.4, death.vars, by = c('vaccination.type', 'age.group'))
+weighted.death = aov(log.rate~vaccination.type+age.group+vaccination.type:age.group, data=death.5, weights=death.5$weight);
+t2 = tbl_regression(weighted.death, exponentiate = TRUE)
+
+infection.vars$weight = 1 / sqrt(infection.vars$vars)
+vaccine.3 = left_join(vaccine.2, infection.vars, by = c('vaccination.type', 'age.group'))
+weighted.infection = aov(log.rate~vaccination.type+age.group+vaccination.type:age.group, data=vaccine.3, weights=vaccine.3$weight);
+
+weighted.infection.2 = aov(log.rate~vaccination.type+age.group, data=vaccine.3, weights=vaccine.3$weight);
+t1 = tbl_regression(weighted.infection.2, exponentiate = TRUE)
+tbl_merge_ex1 = tbl_merge(tbls = list(t1, t2), tab_spanner = c("**Weighted Log Infection Rate**", "**Weighted Log Death Rate**"))
+tbl_merge_ex1
+
+as.data.frame(t(weighted.infection.2$coefficients[2:7])) %>%
+  kbl(caption = "Coefficients in Weighted Log Infection Rate Model") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+as.data.frame(t(weighted.death$coefficients[2:7])) %>%
+  kbl(caption = "Coefficients in Weighted Log Death Rate Model") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+We conclude that:
+
+1. Infection rate of vaccinated group is less than unvaccinated group
+
+2. Age from 12-17 has the lowest infection rate and age from 30-49 has the highest infection rate
+
+3. Death rate of vaccinated group is less than unvaccinated group
+
+4. The death rates of different age group demonstrate a rigorous increasing trend as age group
+
+Although the p-value of age.group in weighted log infection rate model is a little more than 0.05, we contain it in the model.
+In order to explore more about the relationship between the coefficients of the age.group to determine whether we should drop the age.group term, we use Tukey's test about the variable 'age.group' under confidence level $\alpha = 0.1$
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+T.ci=TukeyHSD(weighted.infection.2,"age.group", conf.level = 1-0.1)
+T.ci$age.group %>%
+  kbl(caption = "Coefficients Diff among Age group") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+It seems that even when we relax the confidence level $\alpha = 0.1$, only the difference between the highest group, Age:30-49 and the lowest group, Age:12-17 is significant.
+
+### Infection Model with Combined Age
+
+Then we consider combining the age.group variable, which means splitting them into three new groups: 12-17, 30-49 and other, then we re fit two-way anova.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+vaccine.2$age.group.new = as.character(vaccine.2$age.group)
+vaccine.2$age.group.new[vaccine.2$age.group.new != '12-17' & vaccine.2$age.group.new != '30-49'] = 'other'
+vaccine.2$age.group.new = factor(vaccine.2$age.group.new)
+combine.infection = aov(log.rate~vaccination.type+age.group.new, data=vaccine.2)
+tbl_regression(combine.infection, exponentiate = TRUE)
+```
+The age.group.new variable is significant now.
+
+We make model diagnosis for this age combined model.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+par(mfrow=c(1,2))
+plot(combine.infection,cex.lab=1.2,which=1:2)
+par(mfrow=c(1,1))
+```
+
+The distribution of residuals is still thin-tailed compared to the normal distribution.
+We still use previous three methods under significance level $\alpha = 0.05$ to test the homogeneity of variance
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+vaccine.2$res.abs.new = abs(combine.infection$residuals);
+full4 = aov(res.abs.new~vaccination.type+age.group.new,data=vaccine.2)
+reduced4=aov(res.abs.new~1,data=vaccine.2)
+levene.anova.3 = anova(reduced4,full4)
+Levene = c(NA, NA, levene.anova.3$`Pr(>F)`[2])
+
+infection.vars.2 = summarise(group_by(vaccine.2, vaccination.type, age.group.new), vars = var(log.rate))[, c("vars", "vaccination.type", "age.group.new")]
+H.stat.3=max(infection.vars.2$vars)/min(infection.vars.2$vars)
+n.3 = dim(vaccine.2)[1]
+k.3 = dim(infection.vars.2)[1]
+critical.value.5 = qmaxFratio(0.95,df=n.3/k.3-1,k=k.3)
+#qmaxFratio(0.95,df=ceiling(sum(ns)/length(ns)-1),k=length(ns))
+Hartley = c(H.stat.3, critical.value.5, NA)
+
+s.all.3 = sum(infection.vars.2$vars) / k.3
+K.stat.3 = (n.3-k.3) * log(s.all.3) - (n.3/k.3-1) * sum(log(infection.vars.2$vars))
+critical.value.6 = qchisq(0.95, df=k.3-1)
+
+Bartlett = c(K.stat.3, critical.value.6, NA)
+
+Homo.3 = data.frame(rbind(Levene, Hartley, Bartlett))
+names(Homo.3) = c("Statistics Value","Critical Value","P-Value")
+Homo.3 %>%
+  kbl(caption = "Homogeneity of Variance Tests for Combined-Age Model") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+All three methods show we should reject the null hypotheses, therefore, we still think homogeneity of variance does not hold here. We still need find a weight for this age combined model and fit weighted least square model. 
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+infection.vars.2$weight = 1 / sqrt(infection.vars.2$vars)
+vaccine.4 = left_join(vaccine.2, infection.vars.2, by = c('vaccination.type', 'age.group.new'))
+weighted.infection.new = aov(log.rate~vaccination.type+age.group.new, data=vaccine.4, weights=vaccine.4$weight);
+tbl_regression(weighted.infection.new, exponentiate = TRUE)
+```
+The vaccination.type and age.group.new are all significant now (under $\alpha = 0.05$). But we still doubt about whether the age-combining model is more effective. We still use Tukey's method on this age.group in this new model.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+T.ci=TukeyHSD(weighted.infection.new,"age.group.new", conf.level = 1-0.05)
+T.ci$age.group.new %>%
+  kbl(caption = "Coefficients Diff among Age group") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+It seems we could claim that there definitely exists difference in infection rate between the group Age:30-49 and the group Age:12-17. We still remember that our residuals are thin-tailed, which means our tests are actually a little conservative. That's another reason why we finally think there exist some difference in infection rate among age groups.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+BIC.old = BIC(weighted.infection.2)
+BIC.new = BIC(weighted.infection.new)
+```
+And We find that the BIC of old model is `r BIC.old`,  BIC of new model is `r BIC.new`. The BIC of new model is smaller, which means the combined age could definitely make the model more effective, Which could also support another conclusion that there is no difference among the group Age:18-29 and the group Age:50-64, the group Age:65-79 and the group Age:80+.
+
+## Conclusion
+
+We conclude from our final anova models for both infection rate and death rate as:
+
+1. Infection rate of vaccinated group is less than unvaccinated group
+
+2. There is no significant difference of infection rate of among the group Age:18-29 and the group Age:50-64, the group Age:65-79 and the group Age:80+, while there exists significant difference in infection rate between the group Age:30-49 and the group Age:12-17(the highest infection rate group and the lowest infection rate group)
+
+3. Death rate of vaccinated group is less than unvaccinated group
+
+4. The death rates of different age group demonstrate a rigorous increasing trend as age group 
+
+# Survival Analysis Part
+
+## Data Description
+
+From the previous two-way anova model, we conclude that the death rate of COVID-19 is highly correlated the vaccination and age group of the population. We still want to explore more factors which are correlated with the death cases of COVID-19, especially the characteristics not from clinic treatment. (Due to the limitation of major, those characteristics from clinic treatments is hard to understand and explain.) We use a data set from Mexican population published by the Epidemiological Surveillance System for Viral Respiratory Diseases of the Mexican Ministry of Health to build a survival analysis.[8][9] (At first, we want to make analysis for patients in Wuhan, China, where the pandemic first broke out. But the data in Chinese hospital are highly confidential.) This data set contains the information recorded on every individual, including: sex, age, nationality, place of residence, migratory status, chronic diseases, immune-suppression, and other diseases reported by the individual, smoking and pregnancy.[8] We make some preprocessings for this data set and finally we will use these columns: (We also fit another cox model with more variables, but in order to relive the grade and save the space, we put it in the appendix part)
+
+1. Sex: the gender of the patients
+2. Age.Group: the age group of the patient 
+3. FECHA_SINTOMAS: the date that the patient developed symptoms
+4. FECHA_DEF: the date that the patient finally died, if the patient was cured, then it will be "9999-99-99" (We use this two variables to calculate the survival period and indicator of death)
+5. Obesity: whether the patient is obese
+6. Smoke: whether the patient smokes
+7. Days: the number of days from development of symptoms to death or being censored
+8. Event: the Indicator of whether this patient died or was censored
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+Mexico.sample = read.csv("Mexico_Sample.csv")
+```
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+age_map = function(x){
+  if (x < 25){
+    "25-"
+  }else if(x < 50){
+    "25-49"
+  }else if(x < 75){
+    "50-75"
+  }else{
+    "75+"
+  }
+}
+Mexico.sample$Gender = "Male"
+Mexico.sample[which(Mexico.sample$SEXO == 2), ]$Gender = "Female"
+Mexico.sample$Gender = factor(Mexico.sample$Gender)
+
+Mexico.sample$Age.group = unlist(lapply(Mexico.sample$EDAD, age_map))
+Mexico.sample$Age.group = factor(Mexico.sample$Age.group)
+
+Mexico.sample$Nationality = "Mexico"
+Mexico.sample[which(Mexico.sample$NACIONALIDAD == 2), ]$Nationality = "Foreigner"
+Mexico.sample$Nationality = factor(Mexico.sample$Nationality)
+
+Mexico.sample$Pregnancy = "Pregnant"
+Mexico.sample[which(Mexico.sample$EMBARAZO == 2 | Mexico.sample$EMBARAZO == 97), ]$Pregnancy = "Non-Pregnant"
+Mexico.sample$Pregnancy = factor(Mexico.sample$Pregnancy)
+
+Mexico.sample$Obesity = "Obese"
+Mexico.sample[which(Mexico.sample$OBESIDAD == 2), ]$Obesity = "Non-Obese"
+Mexico.sample$Obesity = factor(Mexico.sample$Obesity)
+
+Mexico.sample$Smoke = "Smoking"
+Mexico.sample[which(Mexico.sample$TABAQUISMO == 2), ]$Smoke = "Non-Smoking"
+Mexico.sample$Smoke = factor(Mexico.sample$Smoke)
+
+Mexico.sample$Diabetes = "Diabetes"
+Mexico.sample[which(Mexico.sample$DIABETES == 2), ]$Diabetes = "Non-Diabetes"
+Mexico.sample$Diabetes = factor(Mexico.sample$Diabetes)
+
+Mexico.sample$COPD = "COPD"
+Mexico.sample[which(Mexico.sample$EPOC == 2), ]$COPD = "Non-COPD"
+Mexico.sample$COPD = factor(Mexico.sample$COPD)
+
+Mexico.sample$Pneumonia = "Pneumonia"
+Mexico.sample[which(Mexico.sample$NEUMONIA == 2), ]$Pneumonia = "Non-Pneumonia"
+Mexico.sample$Pneumonia = factor(Mexico.sample$Pneumonia)
+
+Mexico.sample$Asthma = "Asthma"
+Mexico.sample[which(Mexico.sample$ASMA == 2), ]$Asthma = "Non-Asthma"
+Mexico.sample$Asthma = factor(Mexico.sample$Asthma)
+
+Mexico.sample$Hypertension = "Hypertension"
+Mexico.sample[which(Mexico.sample$HIPERTENSION == 2), ]$Hypertension = "Non-Hypertension"
+Mexico.sample$Hypertension = factor(Mexico.sample$Hypertension)
+
+Mexico.sample$Event = 0
+Mexico.sample[which(Mexico.sample$FECHA_DEF != "9999-99-99" & as.Date(Mexico.sample$FECHA_DEF) <= as.Date("2020-04-30")), ]$Event = 1
+
+Mexico.sample$Days = as.integer(difftime(as.Date("2020-04-30"), as.Date(Mexico.sample$FECHA_SINTOMAS), units="days"))
+Mexico.sample[which(Mexico.sample$Event == 1), ]$Days = as.integer(difftime(as.Date(Mexico.sample[which(Mexico.sample$Event == 1), ]$FECHA_DEF), as.Date(Mexico.sample[which(Mexico.sample$Event == 1), ]$FECHA_SINTOMAS), units="days"))
+```
+
+```{r echo=FALSE,warning=FALSE,message=FALSE, results="asis"}
+surv.data = Mexico.sample[, c("Gender", "Age.group", "Obesity", "Smoke", "Event", "Days")]
+surv.data = surv.data[which(surv.data$Days > 0), ]
+covid.surv <- with(surv.data, Surv(Days, Event))
+new_summary = qsummary(surv.data[, c("Gender", "Age.group", "Obesity", "Smoke")],
+                       numeric_summaries = list("Minimum" = "~ min(%s)",
+                                                "25%"     = "~ quantile(%s, 0.25)",
+                                                "Median"  = "~ median(%s)",
+                                                "Mean"    = "~ round(mean(%s))",
+                                                "75%"     = "~ quantile(%s, 0.75)",
+                                                "Maximum" = "~ max(%s)",
+                                                "Standard Error" = "~ round(sd(%s), 2)"),
+                       n_perc_args = list(digits=1, show_symbol=TRUE, show_denom="always"))
+summary_table(surv.data, new_summary)
+```
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+surv.event = surv.data[which(surv.data$Event == 1), ]
+surv.censor = surv.data[which(surv.data$Event == 0), ]
+
+event.plot = ggplot(data = surv.event, mapping=aes(x = Days, fill = Days)) + geom_histogram(mapping =    aes(y =..density..),  alpha = 0.3, bins = 30, fill = '#3484BE') + geom_density(size = 0.8, color = "#4477AA") + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Histogram of Death Days")
+
+censor.plot = ggplot(data = surv.censor, mapping=aes(x = Days, fill = Days)) + geom_histogram(mapping =    aes(y =..density..),  alpha = 0.3, bins = 30, fill = '#3484BE') + geom_density(size = 0.8, color = "#4477AA") + theme(panel.border = element_blank(),panel.grid=element_blank(), panel.background=element_blank(), plot.title=element_text(size=14, face="bold", hjust=0.5), plot.background = element_rect(fill="white")) + ggtitle("Histogram of Censored Days")
+
+ggarrange(event.plot, censor.plot, ncol = 2, nrow = 1)
+```
+
+From the these results we can say that the almost all the categorical features are not distributed uniformly except the gender, and the distributions of death days and censored days are all right-skewed, especially the death days. Almost all the death case occurred in 30 days after development of symptoms, and more than 2/3 occurred in 10 days.
+
+## Kaplan-Meier survival estimator
+
+Although almost all the features are not distributed uniformly except the gender, they are still enough for us to construct Kaplan-Meier survival estimator to verify whether these variables follow proportional hypotheses and has some differences. Kaplan-Meier survival estimator is[10]:
+$$\hat{S(t)} = \prod_{t_i< t}[1- \frac{d_i}{Y_i}]$$
+where $d_i$ indicates the number of observations whose event time(not censored) is exactly $t_i$, and $Y_i$ indicates the number of observations whose time (event or censored) is less than $t_i$.
+Then the Kaplan-Meier survival plots are shown in following
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+par(mfrow=c(2,2))
+
+KM_fit.Gender <- survfit(covid.surv~Gender,data=surv.data)
+plot(KM_fit.Gender,col=1:2,lwd=2)
+title("Days to Death among Gender")
+legend("bottomleft",levels(surv.data$Gender),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Obesity <- survfit(covid.surv~Obesity,data=surv.data)
+plot(KM_fit.Obesity,col=1:2,lwd=2)
+title("Days to Death among Obesity")
+legend("bottomleft",levels(surv.data$Obesity),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Age <- survfit(covid.surv~Age.group,data=surv.data)
+plot(KM_fit.Age,col=1:4,lwd=2)
+title("Days to Death among Age")
+legend("bottomleft",levels(surv.data$Age.group),col=1:4,lwd=2, cex=0.8)
+
+KM_fit.Smoke <- survfit(covid.surv~Smoke,data=surv.data)
+plot(KM_fit.Smoke,col=1:2,lwd=2)
+title("Days to Death among Smoking")
+legend("bottomleft",levels(surv.data$Smoke),col=1:2,lwd=2, cex=0.8)
+```
+
+From these Kaplan-Meier survival plots, it seems that all of them follow the proportional hypotheses. (There are no evident crosses of survival function from different types) In our previous experience with respect to other diseases, women often have lower hazard compared to men, but it seems that the current situation is opposite.
+
+## COX model fitting
+
+In order to explore more information about how these factors that are correlated with the death cases(Hazard function) of COVID-19, we build a cox regression model among these variables to estimate the Hazard function:
+$$h(t|x) = h(t)exp\{\beta_1Male \ + \ \beta_2Age:25-49 \ + \ \beta_3Age:50-75\ \ + \ \beta_4Age:>75 \ + \beta_5Obesity\ + \ \beta_6Smoking\}$$
+where the $X$ indicates all the variables.
+In the first fitting, we found that smoking is not significant(very interesting finding), therefore, we drop it and re fit the cox regression.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+covid.cox = coxph(covid.surv ~ Gender+Age.group+Obesity, data = surv.data)
+tbl_regression(covid.cox, exponentiate = TRUE)
+```
+From the results of cox model we could find these things:
+
+1. All the factors are significant except smoking, it seems that smoking has no significant impact on the hazard of death of COVID, this finding contraries to our intuition.
+2. The Age is the most hazard factor. The patients of 75+ have 26.8 times hazards compared to the patients of 25-, the patients of 50-75 have 12.5 times hazards compared to the patients of 25-, and the patients of 25-50 have 2.3 times hazards compared to the patients of 25-. This result is a valid verification of our previous conclusions in two-way ANOVA model
+3. The hazards of obese patients are higher than non-obese patients, and the hazards of female patients are higher than male patients.
+
+## Model diagnoses
+
+We use the Schoenfeld residuals to check proportionality assumption and  Cox-Snell residuals to evaluate model fitting. 
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+par(mfrow=c(2,2))
+covid.zph <- cox.zph(covid.cox)
+covid.mart = residuals(covid.cox,type="martingale")
+covid.cs = surv.data$Event-covid.mart
+surv.csr <- survfit(Surv(covid.cs,surv.data$Event)~1,type="fleming-harrington")
+plot(covid.zph[1], main = "Schoenfeld Residuals for Gender")
+plot(covid.zph[2], main = "Schoenfeld Residuals for Age.group")
+plot(covid.zph[3], main = "Schoenfeld Residuals for Obesity")
+plot(surv.csr,fun="cumhaz")
+abline(0,1)
+title("Cumulative Hazard of Cox-Snell Residuals")
+```
+
+There is no significant non-linear pattern in the residual plots, which indicate that proportionality assumptions for these variables all hold. Although the line with slope 1 and intercept 0 does not fit the Cox-Snell Residuals curve well, which means the fit of our model is not very good, but that is because we only add several fundamental features. And actually we do not care about the effectiveness of this model, we just want to have an rough impression about the 
+hazard of these  fundamental features to support previous conclusions.
+
+# Why Causal Inference doesn't Apply
+
+In our data set, there is only one variable that could be regarded as 'treatment', that is whether the individual is vaccinated and all other features/variables are immutable. And if we want to make a casual inference for 'vaccine', we have to select the first data set (two-way anova data set), because the second data set (survival analysis data set) does not contain the vaccine information. Finally, we think casual inference does not apply to the variable 'vaccine' in the two-way ANOVA model for the following reasons:
+
+1. The first data set only contains the number of new cases of infections each week, that means we do not know the total number of cases because some of them may be infected multiple times. So we can not make any estimations for the ACE with respect to infection.
+
+2. Although we know the exact total number of death (because one person can not die multiple times), we think one of the most important assumptions is violated, which is the assumption $\{Z_i\}_{i=1}^n \perp \{ Y_i(0), Y_i(1)\}_{i=1}^n$ or more generally, the treatment(vaccination here) is totally randomized. Firstly, the individuals could die of COVID-19 only they are infected by the COVID-19(this seems like nonsense), but as mentioned before, we do not know the total number of infections, and we could not control different people are under the same risk of infection. And moreover, like I have concluded in the survival analysis part, there are several risk factors like gender and obesity (in appendix we discuss more complications) that are all correlated with the hazard of death, but we do not know them in the first data set. Finally, whether vaccinated are determined by the individuals themselves, so the vaccination itself might indicate some bias. For example, the people choose to get vaccinated might indicate they care more about COVID. These people might take more actions to protect themselves from infection or on the contrary, they choose to get vaccinated because they have to communicate with many people, which means they have higher infection hazard. Therefore, it is impossible to eliminate the bias of assumption of 'randomized treatment'
+
+# Discussion
+
+So far, I finish my analysis on these data sets of COVID-19, draw some conclusions about the relationships between infections, deaths of COVID-19 and some factors/variables. There are still several points need further exploration.
+
+1. The time plots show that the infection rate and death rate have the similar trend among time from different age group or vaccination group, that's why we omit the impact of time and regard the increasing from each week as an observation. In my previous experience to deal with time series data, the baseline is to utilize tricks in feature engineering to create a lot of seemingly related features and then fit XGboost, LightGBM or LSTM on these abundant features and ensemble the result. And moreover, this method is actually to define the behavioral pattern of the subjects and then to make predictions. But from our intuitions, the emergency of novel corona-virus variant couldn't be defined, which might be one of the most significant factors. Therefore, we think this method doesn't apply this situation. We could make more explorations on how to deal with such kind of data sets to make predictions.
+
+2. In the two-way ANOVA part, we found that the residuals are thin-tailed compared to normal distribution. And we regard it as a conservative test and omit the bias. While the p-value of variable 'Age.group' is only a little bigger than the confidence level $\alpha = 0.05$, and we could not true whether it is caused by the 'conservatism'. We think if we want to explain more about the relationship between the age and infection rate, it is better to find some hypotheses apply to thin-tailed residuals.
+
+3. It's a little pity that we do not find a survival data contains the information of vaccination, so we could not make a comparison of hazard between vaccinated population and unvaccinated population.
+
+# Acknowledgement {-}
+
+My thoughts are inspired by the discussion with Ziqin Wang and Yichen Hu and my teammates. Zitong Zhang and Brittany Lemmon (TA in my last quarter STA 222) give me some informative suggestions. Besides, I can not finish such a report without the teaching from Prof.Chen in STA207. Thanks to all of them.
+
+# Reference {-}
+[1] Centers for Disease Control and Prevention. (n.d.). Rates of covid-19 cases or deaths by age group and vaccination status. Centers for Disease Control and Prevention. Retrieved March 1, 2022, from https://data.cdc.gov/Public-Health-Surveillance/Rates-of-COVID-19-Cases-or-Deaths-by-Age-Group-and/3rge-nu2a 
+
+[2] 李东风. (2022, January 5). R语言教程. 北京大学数学学院. Retrieved February 17, 2022, from https://www.math.pku.edu.cn/teachers/lidf/docs/Rbook/html/_Rbook/index.html 
+
+[3] Chen, S. (n.d.). Notebook on nbviewer. Jupyter Notebook Viewer. Retrieved February 17, 2022, from https://nbviewer.org/github/ChenShizhe/StatDataScience/blob/master/Notes/Chapter4ANOVAII.ipynb 
+
+[4] Does your data violate F test assumptions? (n.d.). Retrieved March 12, 2022, from 
+https://www.quality-control-plan.com/StatGuide/ftest_ass_viol.htm 
+
+[5] Chen, S. (n.d.). Notebook on nbviewer. Jupyter Notebook Viewer. Retrieved March 1, 2022, from
+https://nbviewer.org/github/ChenShizhe/StatDataScience/blob/master/Notes/Chapter4ANOVA.ipynb 
+
+[6] Bartlett's test for homogeneity of variance. Bartlett's Test. (n.d.). Retrieved March 1, 2022, from https://stattrek.com/anova/homogeneity/bartletts-test.aspx 
+
+[7] Hartley's Fmax test for homogeneity of variance. Hartley Fmax Test. (n.d.). Retrieved March 1, 2022, from https://stattrek.com/anova/homogeneity/fmax-test.aspx?tutorial=anova 
+
+[8] Datos Abiertos Dirección general de epidemiología - gob.mx. (n.d.). Retrieved March 11, 2022, from https://www.gob.mx/salud/documentos/datos-abiertos-152127?idiom=es 
+
+[9] Salinas-Escudero, G., Carrillo-Vega, M. F., Granados-García, V., Martínez-Valverde, S., Toledano-Toledano, F., &amp; Garduño-Espinosa, J. (2020). A survival analysis of covid-19 in the Mexican population. BMC Public Health, 20(1). https://doi.org/10.1186/s12889-020-09721-2 
+
+[10] Klein, J. P., &amp; Moeschberger, M. L. (2010). Survival analysis: Techniques for censored and truncated data. Springer. 
+
+
+
+# Appendix {-}
+
+In this part we prepare another cox model with almost all the variables that might have impacts on the hazard. They contain:
+
+1. Sex: the gender of the patients
+2. Age.Group: the age group of the patient 
+3. FECHA_SINTOMAS: the date that the patient developed symptoms
+4. FECHA_DEF: the date that the patient finally died, if the patient was cured, then it will be "9999-99-99" (We use this two variables to calculate the survival period and indicator of death)
+5. Nationality: whether the patient is a Mexican or Foreigner
+6. Pregnancy: whether the patient is pregnant
+7. Obesity: whether the patient is obese
+8. Smoke: whether the patient smokes
+9. Diabetes: whether the patient has diabetes
+10. Pneumonia: whether the patient has pneumonia
+11. COPD: whether the patient has chronic obstructive pulmonary disease
+12. Asthma: whether the patient has asthma
+13. Hypertension: whether the patient has hypertension
+14. Days: the number of days from development of symptoms to death or being censored
+15. Event: the Indicator of whether this patient died or was censored
+```{r echo=FALSE,warning=FALSE,message=FALSE, results="asis"}
+surv.data = Mexico.sample[, c("Gender", "Age.group", "Nationality", "Pregnancy", "Obesity", "Smoke", "Event", "Days", "Diabetes", "COPD", "Pneumonia", "Asthma", "Hypertension")]
+surv.data = surv.data[which(surv.data$Days > 0), ]
+covid.surv <- with(surv.data, Surv(Days, Event))
+new_summary = qsummary(surv.data[, c("Gender", "Age.group", "Nationality", "Pregnancy", "Obesity", "Smoke", "Diabetes", "COPD", "Pneumonia", "Asthma", "Hypertension")],
+                       numeric_summaries = list("Minimum" = "~ min(%s)",
+                                                "25%"     = "~ quantile(%s, 0.25)",
+                                                "Median"  = "~ median(%s)",
+                                                "Mean"    = "~ round(mean(%s))",
+                                                "75%"     = "~ quantile(%s, 0.75)",
+                                                "Maximum" = "~ max(%s)",
+                                                "Standard Error" = "~ round(sd(%s), 2)"),
+                       n_perc_args = list(digits=1, show_symbol=TRUE, show_denom="always"))
+summary_table(surv.data, new_summary)
+```
+
+And these are the Kaplan-Meier survival plots for all the variables
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+par(mfrow=c(2,2))
+
+KM_fit.Gender <- survfit(covid.surv~Gender,data=surv.data)
+plot(KM_fit.Gender,col=1:2,lwd=2)
+title("Days to Death among Gender")
+legend("bottomleft",levels(surv.data$Gender),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Nationality <- survfit(covid.surv~Nationality,data=surv.data)
+plot(KM_fit.Nationality,col=1:2,lwd=2)
+title("Days to Death among Nationality")
+legend("bottomleft",levels(surv.data$Nationality),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Pregancy <- survfit(covid.surv~Pregnancy,data=surv.data)
+plot(KM_fit.Pregancy,col=1:2,lwd=2)
+title("Days to Death among Pregancy")
+legend("bottomleft",levels(surv.data$Pregnancy),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Obesity <- survfit(covid.surv~Obesity,data=surv.data)
+plot(KM_fit.Obesity,col=1:2,lwd=2)
+title("Days to Death among Obesity")
+legend("bottomleft",levels(surv.data$Obesity),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Age <- survfit(covid.surv~Age.group,data=surv.data)
+plot(KM_fit.Age,col=1:4,lwd=2)
+title("Days to Death among Age")
+legend("bottomleft",levels(surv.data$Age.group),col=1:4,lwd=2, cex=0.8)
+
+KM_fit.Smoke <- survfit(covid.surv~Smoke,data=surv.data)
+plot(KM_fit.Smoke,col=1:2,lwd=2)
+title("Days to Death among Smoking")
+legend("bottomleft",levels(surv.data$Smoke),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Diabetes <- survfit(covid.surv~Diabetes,data=surv.data)
+plot(KM_fit.Diabetes,col=1:2,lwd=2)
+title("Days to Death among Diabetes")
+legend("bottomleft",levels(surv.data$Diabetes),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.COPD <- survfit(covid.surv~COPD,data=surv.data)
+plot(KM_fit.COPD,col=1:2,lwd=2)
+title("Days to Death among COPD")
+legend("bottomleft",levels(surv.data$COPD),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Pneumonia <- survfit(covid.surv~Pneumonia,data=surv.data)
+plot(KM_fit.Pneumonia,col=1:2,lwd=2)
+title("Days to Death among Pneumonia")
+legend("bottomleft",levels(surv.data$Pneumonia),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Asthma <- survfit(covid.surv~Asthma,data=surv.data)
+plot(KM_fit.Asthma,col=1:2,lwd=2)
+title("Days to Death among Asthma")
+legend("bottomleft",levels(surv.data$Asthma),col=1:2,lwd=2, cex=0.8)
+
+KM_fit.Hypertension <- survfit(covid.surv~Hypertension,data=surv.data)
+plot(KM_fit.Hypertension,col=1:2,lwd=2)
+title("Days to Death among Hypertension")
+legend("bottomleft",levels(surv.data$Hypertension),col=1:2,lwd=2, cex=0.8)
+```
+
+Then we fit an cox regression model with all these variables: "Gender", "Age.group", "Nationality", "Pregnancy", "Obesity", "Smoke", "Event", "Days", "Diabetes", "COPD", "Pneumonia", "Asthma", "Hypertension"
+$$h(t|x) = h(t)exp\{\beta_1Male \ + \ \beta_2Age:25-49 \ + \ \beta_3Age:50-75\ \ + \ \beta_4Age:>75 \ + \ \beta_5Mexico \ + \ \beta_6Pregnancy \ + \ \beta_7Obesity\\  + \ \beta_8Non-Diabetes \ + \ \beta_{9}Non-COPD  \ + \ \beta_{10}Pneumonia \ + \ \beta_{11}Non-Asthma \ + \ \beta_{12}Non-Hypertension \ \}$$
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+full.cox = coxph(covid.surv ~ Gender+Age.group+Nationality+Pregnancy+Obesity+Diabetes+COPD+Pneumonia+Asthma+Hypertension, data = surv.data)
+tbl_regression(full.cox, exponentiate = TRUE)
+```
+The results show that all the variables are significant. The age and whether the patients are detected with pneumonia are the most hazard factors. Diabetes is also a fairly hazard factor. There are three interesting findings. The first is that the hazards of patients with Asthma are less than the patients without Asthma. The hazards of pregnant patients are only 1/3 compared to those non-pregnant patients. And the hazards of foreigners are only half of those Mexican patients.
+
+# Session info {-}
+
+```{r}
+sessionInfo()
+```
+
+```{r ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+```
